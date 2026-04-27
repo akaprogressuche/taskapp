@@ -6,6 +6,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 api_bp = Blueprint('api', __name__)
 
+@api_bp.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok'}), 200
+
 @api_bp.route('/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
