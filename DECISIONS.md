@@ -133,35 +133,87 @@ Flask is registered as a systemd service so it automatically starts on EC2 reboo
 - Go to **RDS → Databases → taskapp-db → Actions → Start**
 - Wait until status shows **Available** (5-10 minutes)
 
-### 2. Recreate NAT Gateway (only if you need to pull code or install packages)
+### 2. Start Flask EC2
+- Go to **EC2 → Instances → taskapp-flask → Instance State → Start**
+- Flask starts automatically via systemd — no manual action needed
+- Verify via SSM: `sudo systemctl status flask`
+
+### 3. Start Nginx EC2
+- Go to **EC2 → Instances → taskapp-nginx → Instance State → Start**
+- Nginx starts automatically on boot
+
+### 4. Recreate ALB
+> The ALB is deleted when shutting down to save costs. You must recreate it every time.
+
+**Step 1 — Create Target Group**
+- Go to **EC2 → Target Groups → Create target group**
+  - Target type: Instances
+  - Name: `taskapp-flask-tg`
+  - Protocol: HTTP, Port: 5000
+  - VPC: `taskapp-vpc`
+  - Health check path: `/api/health`
+- Register target: select `taskapp-flask` EC2 → include as pending → Create
+
+**Step 2 — Create Load Balancer**
+- Go to **EC2 → Load Balancers → Create → Application Load Balancer**
+  - Name: `taskapp-load-balancer`
+  - Scheme: Internet-facing
+  - VPC: `taskapp-vpc`
+  - Subnets: `taskapp-public-subnet` (eu-north-1a) + `taskapp-public-subnet-2` (eu-north-1b)
+  - Security group: `taskapp-alb-sg`
+  - Listener: HTTP:80 → forward to `taskapp-flask-tg`
+- Create and wait for state to show **Active**
+- Copy the **DNS name** (e.g. `taskapp-load-balancer-xxxxxxxx.eu-north-1.elb.amazonaws.com`)
+
+**Step 3 — Update ALB outbound rule**
+- Go to **EC2 → Security Groups → taskapp-alb-sg → Outbound rules → Edit**
+  - Add rule: Custom TCP, Port 5000, Destination: `taskapp-backend(flaskapp)-sg`
+
+**Step 4 — Rebuild and redeploy frontend**
+- On your local machine, update `.env`:
+  ```
+  VITE_API_URL=http://<new-alb-dns-name>/api
+  ```
+- Build and push:
+  ```bash
+  npm run build
+  git add dist/
+  git commit -m "update dist with new ALB URL"
+  git push
+  ```
+- SSH into Nginx EC2 and pull:
+  ```bash
+  cd /tmp/taskapp && git pull
+  sudo cp -r dist/* /var/www/html/
+  sudo systemctl restart nginx
+  ```
+
+**Step 5 — Verify**
+- Go to **EC2 → Target Groups → taskapp-flask-tg → Targets tab**
+- Flask EC2 should show **Healthy** (may take 1-2 minutes)
+- App is accessible at the Nginx public IP
+
+### 5. Recreate NAT Gateway (only if you need to pull code or install packages on Flask EC2)
 - Go to **VPC → NAT Gateways → Create NAT Gateway**
   - Subnet: `taskapp-public-subnet`
   - Connectivity: Public
   - Click **Allocate Elastic IP**
 - Go to **VPC → Route Tables → taskapp-private-rt → Routes → Edit**
   - Update `0.0.0.0/0` target to the new NAT Gateway ID
-- Delete when done to avoid charges
+- **Delete when done** to avoid charges (~$0.045/hour)
 
-### 3. Start Flask EC2
-- Go to **EC2 → Instances → taskapp-flask → Instance State → Start**
-- Flask starts automatically via systemd — no manual action needed
-- Verify via SSM: `sudo systemctl status flask`
+---
 
-### 4. Start Nginx EC2
-- Go to **EC2 → Instances → taskapp-nginx → Instance State → Start**
-- Nginx starts automatically on boot
-- App is accessible at the Nginx public IP
+## How to Shut Down (to avoid charges)
 
-### 5. Verify ALB Health
-- Go to **EC2 → Target Groups → taskapp-flask-tg → Targets tab**
-- Flask EC2 should show **Healthy**
-- If unhealthy, check Flask is running: `sudo systemctl status flask`
+> Do this in order to avoid unexpected charges.
 
-### How to Shut Down (to avoid charges)
-1. Stop Flask EC2
-2. Stop RDS (free for 7 days, auto-restarts after)
-3. Delete NAT Gateway + release Elastic IP
-4. Nginx EC2 and ALB can stay running (low cost)
+1. **Delete ALB** — EC2 → Load Balancers → select → Actions → Delete
+2. **Delete Target Group** — EC2 → Target Groups → select → Actions → Delete (optional, free)
+3. **Stop Flask EC2** — EC2 → Instances → taskapp-flask → Instance State → Stop
+4. **Stop RDS** — RDS → Databases → taskapp-db → Actions → Stop (free for 7 days, auto-restarts after)
+5. **Delete NAT Gateway + release Elastic IP** — if one exists
+6. **Nginx EC2 can stay running** — t3.micro is very cheap and holds your React build
 
 > **Note:** RDS endpoint never changes on stop/start. Only changes if you delete and recreate the instance.
 
