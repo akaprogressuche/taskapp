@@ -125,6 +125,48 @@ Flask is registered as a systemd service so it automatically starts on EC2 reboo
 
 ---
 
+## How to Start the Application
+
+> Follow this order every time — RDS must be running before Flask starts.
+
+### 1. Start RDS
+- Go to **RDS → Databases → taskapp-db → Actions → Start**
+- Wait until status shows **Available** (5-10 minutes)
+
+### 2. Recreate NAT Gateway (only if you need to pull code or install packages)
+- Go to **VPC → NAT Gateways → Create NAT Gateway**
+  - Subnet: `taskapp-public-subnet`
+  - Connectivity: Public
+  - Click **Allocate Elastic IP**
+- Go to **VPC → Route Tables → taskapp-private-rt → Routes → Edit**
+  - Update `0.0.0.0/0` target to the new NAT Gateway ID
+- Delete when done to avoid charges
+
+### 3. Start Flask EC2
+- Go to **EC2 → Instances → taskapp-flask → Instance State → Start**
+- Flask starts automatically via systemd — no manual action needed
+- Verify via SSM: `sudo systemctl status flask`
+
+### 4. Start Nginx EC2
+- Go to **EC2 → Instances → taskapp-nginx → Instance State → Start**
+- Nginx starts automatically on boot
+- App is accessible at the Nginx public IP
+
+### 5. Verify ALB Health
+- Go to **EC2 → Target Groups → taskapp-flask-tg → Targets tab**
+- Flask EC2 should show **Healthy**
+- If unhealthy, check Flask is running: `sudo systemctl status flask`
+
+### How to Shut Down (to avoid charges)
+1. Stop Flask EC2
+2. Stop RDS (free for 7 days, auto-restarts after)
+3. Delete NAT Gateway + release Elastic IP
+4. Nginx EC2 and ALB can stay running (low cost)
+
+> **Note:** RDS endpoint never changes on stop/start. Only changes if you delete and recreate the instance.
+
+---
+
 ## Environment Variables
 
 ### Backend (.env on Flask EC2)
